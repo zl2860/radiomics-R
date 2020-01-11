@@ -1,0 +1,334 @@
+---
+title: "feature_extraction"
+author: "Zongchao Liu"
+date: "12/21/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+library(tidyverse)
+library(glmnet)
+library(readxl)
+library(gpairs)
+```
+
+# 清洗数据，采用的是LoG 1,2,3,4,5  + wavelet 滤波获取特征
+
+```{r, message=FALSE}
+features = read_csv("./data/feature_extracted_2019.csv") %>%
+  janitor::clean_names() %>%
+  mutate(id = c(1:64)) %>%
+  select(-x1) %>%
+  select(id,everything())
+
+# 挑选出可以用于回归的变量
+feature_for_lasso = features[,-c(1:23)]
+
+# 获取观测值姓名信息
+file_names = tibble(
+  names = list.files("./done")) %>%
+  filter(str_detect(names, "-") == FALSE)
+
+# 匹配姓名与CT影像特征数据
+feature_for_lasso = cbind(file_names, feature_for_lasso) %>%
+  separate(names,c("name","format")) %>%
+  select(-format)
+
+```
+
+# see distribution, 查看各个提取特征的数值分布
+
+```{r}
+# center the data
+centered_features = scale(feature_for_lasso[,-1], scale = F) %>% 
+  as.data.frame() %>% cbind(file_names, .) %>%
+  separate(names,c("name","format")) %>%
+  select(-format)
+
+skimr::skim(centered_features)
+
+# load and combine results
+outcome_df = read_excel("./data/outcome-pCR.xlsx") %>% .[-1]
+
+centered_features = cbind(outcome_df, centered_features) %>%
+  mutate(pCR = factor(pCR))# this is the final data for analysis
+
+```
+
+# 01/09/2019，获得病人基线数据并整合
+
+```{r}
+factors_outcomes = read_csv('./data/factors_outcomes.csv') %>%
+  select(- X1) %>%
+  cbind(feature_for_lasso$name, .) %>%
+  select('feature_for_lasso$name', names_eng, everything()) %>%
+  select(-'feature_for_lasso$name')
+
+```
+
+
+# lasso
+```{r}
+outcome = pull(centered_features,pCR)
+predictor_variables = centered_features %>% select(-pCR, - name) %>% as.matrix()
+
+#10 fold cv for picking lambda
+lasso = cv.glmnet(predictor_variables,outcome, family="binomial",type.measure = "class")
+plot(lasso)
+
+lasso = cv.glmnet(predictor_variables,outcome, family="binomial",type.measure = "auc")
+plot(lasso)
+
+lambda = lasso$lambda.min
+
+lasso_final = glmnet(predictor_variables,outcome, family="binomial",alpha = 1, lambda = lambda)
+
+lasso_coef = as.data.frame(as.matrix(coef(lasso_final))) %>%
+  mutate(features = row.names(as.matrix(coef(lasso_final)))) %>%
+  filter(s0 != 0)
+
+extracted_features = lasso_coef$features
+# 矩阵计算radscores
+coefs = as.vector(lasso_coef$s0)
+a = centered_features %>%
+  select(extracted_features[-1]) %>%
+  mutate(intercept = seq(1,1,64)) %>%
+  select(intercept,everything()) %>%
+  as.matrix(.) # a = 特征矩阵
+
+radscores = a %*% coefs
+
+radscore_results = centered_features %>%
+  select(pCR,
+         name,
+         extracted_features[-1]) %>%
+  mutate(radscore = radscores,
+         name = recode(name,
+                       "caimingping" = "caiminping",
+                       "lixilai2" = "lixilai")) %>%
+  select(pCR,
+         name,
+         radscore)
+
+
+
+radscore_results %>%
+  ggplot(aes( x = pCR, y = radscore, fill = pCR)) +
+  geom_boxplot() +
+  theme_bw() +
+  ggsci::scale_fill_lancet() # 此图不正确，以PCR为准 而不是pCR
+
+
+radscore_results %>%
+  filter( radscore > (quantile(radscore, .25) - 1.5*IQR(radscore)) & radscore < (quantile(radscore, .75) + 1.5*IQR(radscore))) %>%
+  ggplot(aes( x = pCR, y = radscore, fill = pCR)) +
+  geom_point() +
+  theme_bw() +
+  ggsci::scale_fill_lancet() # 此图不正确，以PCR为准 而不是pCR
+
+# heatmap 先不用管
+# plotting heatmap
+## 只看筛选变量
+#heatmap = cbind(centered_features, radscore_results$radscore) %>%
+#  rename( "radscore" = "radscore_results$radscore" ) %>%
+#  select(-pCR, -name) %>%
+#  select(extracted_features[-1],radscore) %>%
+#  scale() %>%
+#  as.data.frame() %>%
+#  cbind(pull(centered_features,pCR), pull(centered_features,name), .) %>%
+#  mutate(pCR = pull(centered_features,pCR),
+#         name = pull(centered_features,name)) %>%
+#  select(-1,-2) %>% 
+#  select(pCR, name, radscore, everything()) %>%
+#  arrange(pCR) %>% 
+#  arrange(radscore) %>%
+#  mutate(index = 1:64,
+#         index = factor(index)) %>%
+#  pivot_longer(4:27, #注意可能会变
+#               names_to = "var")
+#
+###dont run
+##heatmap = cbind(centered_features, radscore_results$radscore) %>%
+##  rename( "radscore" = "radscore_results$radscore" ) %>%
+##  select(-pCR, -name) %>%
+##  #select(extracted_features[-1]) %>%
+##  scale() %>%
+##  as.data.frame() %>%
+##  cbind(pull(centered_features,pCR), pull(centered_features,name), .) %>%
+##  mutate(pCR = pull(centered_features,pCR),
+##         name = pull(centered_features,name)) %>%
+##  select(-1,-2) %>% 
+##  select(pCR, name, radscore,everything()) %>%
+##  arrange(pCR) %>%
+##  arrange(radscore) %>%
+##  select(-1,-2,-3) %>%
+##  as.data.frame() %>%
+##  mutate(index = 1:64,
+##         index = factor(index)) %>%
+##  pivot_longer(1:579, #注意可能会变
+##               names_to = "var")
+####
+#
+#colors <- colorRampPalette(c("black", "gold"))(10)
+#heatmap %>%
+#   ggplot(aes(y = var, x = index )) +
+#  geom_tile(aes(fill = (value))) +
+#  scale_fill_gradientn(colors = colors) +  
+#  theme_light() +
+#  theme(plot.title = element_text(hjust = 0.5)) +
+#  geom_vline( xintercept = 50)
+
+
+```
+
+
+# logistic reg
+
+## 首先清理数据
+```{r}
+combined_data = read_csv('./data/factors_outcomes.csv') %>%
+ rename("name" = "names_eng" ,
+        "age" = "年龄",
+        "sex" = "性别",
+        "group" = "组别（无序分类）",
+        "cT" = "cT（有序分类）",
+        "cN" = "cN（有序分类）",
+        "MRF" = "MRF阳性（二分类）",
+        "tumor_length" = "肿瘤长度（连续数值）",
+        "tumor_thickness" = "肿瘤厚度（连续数值）",
+        "distance" = "治疗前肛缘距离（连续数值）",
+        "path" = "活检病理类型（无序分类）",
+        "CEA" = "治疗前CEA（连续数值）",
+        "differentiation" = "活检分化程度（有序分类）"
+        ) %>%
+  mutate(name = recode(name,
+                       "cengrenyong" = "zengrenyong",
+                       "huanghuaxing" = "huanghuaxin",
+                       "licaiqun" = "licaiqun2",
+                       "lijiabin" = "lijiabing",
+                       "wugenghui" = "wugenghui2",
+                       "yanpinggen" = "yangpinggen",
+                       "yinshaozeng" = "yinshaozhen",
+                       "chenqiuru" = "chenqiru"
+                       ),
+         PCR = factor(PCR),
+         differentiation = factor(differentiation),
+         sex = recode(sex,
+                      "男" = "male",
+                      "女" = "female"),
+         group = as.character(group),
+         cT = factor(cT),
+         cN = factor(cN),
+         MRF = as.character(MRF),
+         path = as.character(path)) %>%
+ merge(., radscore_results) %>%
+ select(name, everything(), - X1) %>%
+  select(-1,-2, - pCR)
+  #select(1,2,3,15,16,17)
+ #重新编码变量名，变量类型
+```
+
+# 粗略查看总体变量情况
+
+```{r}
+combined_data %>%
+  ggplot(aes(x = PCR , y = radscore, fill = PCR)) +
+  geom_point()
+
+combined_data %>%
+  ggplot(aes(x = radscore)) +
+  geom_histogram()
+
+combined_data %>%
+  ggplot(aes(x = group, y = radscores, fill = group)) +
+  geom_point()
+
+# 数值特征
+combined_data %>%
+  group_by(PCR) %>%
+  summarise(mean_rs = mean(radscore),
+            median = median(radscore),
+            sd = sd(radscore))
+#overall table
+library(kableExtra)
+library(knitr)
+library(arsenal)
+control <- arsenal::tableby.control(test = T,
+                                    numeric.stats = c("meansd","medianq1q3","range"),
+                                    ordered.stats = c("Nmiss"),
+                                    digits = 2)
+tbl <- arsenal::tableby( PCR ~ ., data = combined_data, control = control)
+
+summary(tbl,text = T) %>%
+  knitr::kable(booktabs = T, caption = "Descriptive Statistics") %>%
+  kable_styling(latex_options = c("striped", "hold_position")) 
+
+```
+
+# regression
+ 
+```{r}
+reg = glm(PCR ~ . ,data=combined_data, family = binomial(link='logit'))
+summary(reg)
+
+
+
+```
+
+# 作业，忽略
+```{r}
+
+# 定义需要用到的函数
+## 抽样
+#sample = 
+#  function(mean, sd){
+#  rnorm(100,mean = mean, sd = sd) %>%
+#      as.list()
+#}
+##计算两样本均值
+#cal_mean = 
+#  function(list){
+#    mean(unlist(list))
+#  }
+##计算power
+#pwr_cal = 
+#  function(d, type = "two.sample"){
+#    result = pwr.t.test(n = 100, type = type, d = d)
+#    result$power
+#    
+#  }
+#
+## 抽样，时间有限这里只抽了100次，可以改成100000次
+#hw <-
+#tibble(index = c(1:100),
+#       mean_a =rep(3,100),
+#       mean_b = rep(4,100),
+#       sd_a = rep(5,100),
+#       sd_b = rep(8,100),
+#       sample_a = map2(.x = mean_a,
+#                       .y = sd_a,
+#                       sample),
+#        sample_b = map2(.x = mean_b,
+#                       .y = sd_b,
+#                       sample))
+#
+##单独算sigma，放在simulation里老报错，不知道为啥。。。
+#std_err_vec = vector()
+#for (i in c(1:100)) {
+#  c = t.test(as.vector(unlist(hw$sample_a[[i]])),
+#           as.vector(unlist(hw$sample_b[[i]])))
+#  std_err_vec = append(std_err_vec, c$stderr)
+#  
+#}
+#
+## 在原有数据集加上标准误，同时计算检验效能
+#hw = hw %>%
+#  mutate(std = std_err_vec,
+#         d_a = as.numeric(map(sample_a, cal_mean)),
+#         d_b = as.numeric(map(sample_b, cal_mean)),
+#         d = abs(d_a - d_b),
+#         pwr = map(d,pwr_cal))
+  
+
+```
