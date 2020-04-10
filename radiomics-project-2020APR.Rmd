@@ -1,0 +1,264 @@
+---
+title: "2020Apr"
+author: "Zongchao Liu"
+date: "4/9/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(ModelMetrics)
+library(readxl)
+```
+
+# import and clean the dataset for patients' information
+
+```{r message=FALSE, warning=FALSE}
+outcome_df = read_csv('./data/factors_outcomes.csv') %>%
+ rename("name" = "names_eng" ,
+        "age" = "年龄",
+        "sex" = "性别",
+        "group" = "组别（无序分类）",
+        "cT" = "cT（有序分类）",
+        "cN" = "cN（有序分类）",
+        "MRF" = "MRF阳性（二分类）",
+        "tumor_length" = "肿瘤长度（连续数值）",
+        "tumor_thickness" = "肿瘤厚度（连续数值）",
+        "distance" = "治疗前肛缘距离（连续数值）",
+        "path" = "活检病理类型（无序分类）",
+        "CEA" = "治疗前CEA（连续数值）",
+        "differentiation" = "活检分化程度（有序分类）"
+        ) %>%
+  mutate(name = recode(name,
+                       "cengrenyong" = "zengrenyong",
+                       "huanghuaxing" = "huanghuaxin",
+                       "licaiqun" = "licaiqun2",
+                       "lijiabin" = "lijiabing",
+                       "wugenghui" = "wugenghui2",
+                       "yanpinggen" = "yangpinggen",
+                       "yinshaozeng" = "yinshaozhen",
+                       "chenqiuru" = "chenqiru"
+                       ),
+         PCR = factor(PCR),
+         differentiation = factor(differentiation),
+         sex = recode(sex,
+                      "男" = "male",
+                      "女" = "female"),
+         group = as.character(group),
+         cT = factor(cT),
+         cN = factor(cN),
+         MRF = as.character(MRF),
+         path = as.character(path)) %>%
+  arrange(name) %>%
+  .[15]
+
+outcome_df_2020 = read_xlsx('./副本outcome_2020_4.xlsx') %>%
+ rename("name" = "姓名" ,
+        "age" = "年龄",
+        "sex" = "性别",
+        "group" = "组别（无序分类）",
+        "cT" = "cT（有序分类）",
+        "cN" = "cN（二分类）",
+        "MRF" = "MRF阳性（二分类）",
+        "tumor_length" = "肿瘤长度（连续数值）",
+        "tumor_thickness" = "肿瘤厚度（连续数值）",
+        "distance" = "治疗前肛缘距离（连续数值）",
+        "path" = "活检病理类型（无序分类）",
+        "CEA" = "治疗前CEA（连续数值）",
+        "differentiation" = "活检分化程度（有序分类）"
+        ) %>%
+  mutate(
+         PCR = factor(PCR),
+         differentiation = factor(differentiation),
+         sex = recode(sex,
+                      "男" = "male",
+                      "女" = "female"),
+         group = as.character(group),
+         cT = factor(cT),
+         cN = factor(cN),
+         MRF = as.character(MRF),
+         path = as.character(path))
+```
+
+
+
+
+
+# The following is only for Logistic LASSO Regression Analysis
+
+```{r message=FALSE, warning=FALSE}
+# import and clean data
+features = read_csv("./data/feature_extracted_2019_1.csv") %>%
+  janitor::clean_names() %>%
+  mutate(id = c(1:64)) %>%
+  select(-x1) %>%
+  select(id,everything())
+
+# import and clean data(2020.4)
+features_1 = read_csv("./feature_extracted_2020_APR.csv") %>%
+  janitor::clean_names() %>%
+  mutate(id = c((1+64):(nrow(.)+64))) %>%
+  select(-x1) %>%
+  select(id,everything())
+features_1 = features_1[,-c(2:38)]
+
+# row-bind current data
+# 挑选出可以用于回归的变量
+feature_for_lasso = features[,-c(2:38)] %>%
+  rbind(.,features_1)
+
+# 获取观测值姓名信息
+file_names = tibble(
+  names = list.files("./done")) %>%
+  filter(str_detect(names, "-") == FALSE)
+
+file_names_2020 = outcome_df_2020$name[1:36]
+PCR_2020 = outcome_df_2020$PCR[1:36]
+
+# 匹配姓名与CT影像特征数据
+PCR_2019 = outcome_df$PCR
+PCR = factor(as.numeric(c(PCR_2019,PCR_2020))-1)
+
+
+feature_for_lasso = feature_for_lasso %>%
+  mutate(PCR = PCR) %>%
+  select(PCR,id,everything()) %>%
+  as.tibble()# final data for 2020 
+
+rm(features)
+rm(file_names)
+
+
+```
+
+
+## LASSO
+
+### filter predictors via t-test, be careful about type 1 error
+
+```{r,include=FALSE}
+var_0 = feature_for_lasso %>%
+  filter(PCR == 0)
+var_1 = feature_for_lasso %>%
+  filter(PCR != 0)
+var = colnames(feature_for_lasso)[-c(1:2)] # may change index
+
+sig_vec = vector()
+for (variable in var) {
+  #print(variable)
+  test.sig= t.test(pull(var_0,variable),pull(var_1,variable))$p.value
+  sig_vec = append(sig_vec, test.sig)
+}
+
+sig.total = tibble(
+  var = var,
+  sig = sig_vec
+) %>%
+  filter(sig <0.1)
+
+features_into_account = sig.total$var
+```
+
+
+### do the regression work
+
+```{r}
+data_reg = feature_for_lasso[-2]
+
+x = model.matrix(PCR ~ . , data_reg)[,-1] %>% as.tibble() %>%
+  .[features_into_account] %>% #1 :1031 ,1:831
+  as.matrix()
+y = feature_for_lasso$PCR
+
+
+ctrl1  = trainControl(method = "cv", number = 10)
+
+set.seed(2)
+lasso.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-10, -1, length=1000))),
+        preProc = c("center", "scale"),
+        trControl = ctrl1)
+
+
+ridge.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-10, -1, length=1000))),
+        preProc = c("center", "scale"),
+        trControl = ctrl1)
+
+
+
+
+
+ggplot(lasso.fit) +
+  theme_bw()
+
+ggplot(ridge.fit) +
+  theme_bw()
+```
+
+
+#### check model
+```{r}
+lasso.fit$bestTune #best lambda
+lasso.fit$metric
+lasso.fit$preProcess
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef %>%
+  filter(value !=0) %>%
+  nrow() # number of useful predictors
+
+
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept
+
+# the next step is to calculate radscores:
+
+predictors_val = coef$value[-1]
+
+
+feature_matrix = feature_for_lasso[predictors] %>% as.matrix() %>% scale()
+coef_matrix = predictors_val %>% as.matrix()
+
+radscore = feature_matrix %*% coef_matrix + coef$value[1]
+radscore_df = tibble(PCR = PCR,
+                     radscore = radscore)
+
+radscore_df %>%
+  ggplot(aes(x = PCR,
+             y = radscore, fill = PCR)) +
+  geom_boxplot() +
+  theme_bw()
+
+
+
+# cal radscoe by using ridge regression
+#
+#coef = data.frame(as.matrix(coef(ridge.fit$finalModel,ridge.fit$bestTune$lambda)))
+#coef = coef %>%
+#  mutate(coef = rownames(coef)) %>%
+#  rename("value" = "X1") %>%
+#  filter(value !=0)
+```
+
+# logistic reg
+
+```{r}
+outcome_df_2020 = outcome_df_2020 %>%
+mutate(radscore = radscore)
+
+logistic.fit = glm(PCR ~ radscore, data = radscore_df, family = binomial(link = "logit"))
+logistic.fit_norad = glm(PCR ~ . -name - radscore, data = outcome_df_2020, family = binomial(link = "logit"))
+
+summary(logistic.fit)
+summary(logistic.fit_norad)
+
+
+```
+
