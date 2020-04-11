@@ -251,14 +251,41 @@ radscore_df %>%
 
 ```{r}
 outcome_df_2020 = outcome_df_2020 %>%
-mutate(radscore = radscore)
+  mutate(PCR = factor(as.numeric(c(PCR_2020,PCR_2019))-1),
+         radscore = c(radscore[65:100],radscore[1:64]),
+         group = factor(recode(group,
+                        "A" = "1",
+                        "B" = "2",
+                        "C" = "3",
+                        "c" = "3"))) 
 
-logistic.fit = glm(PCR ~ radscore, data = radscore_df, family = binomial(link = "logit"))
-logistic.fit_norad = glm(PCR ~ . -name - radscore, data = outcome_df_2020, family = binomial(link = "logit"))
+logistic.fit = glm(PCR ~ radscore, data = radscore_df, family = binomial(link = "logit")) # only radscore
+
+logistic.fit_norad = glm(PCR ~ tumor_thickness, data = outcome_df_2020, family = binomial(link = "logit")) # a lot
 
 summary(logistic.fit)
 summary(logistic.fit_norad)
 
+outcome_df_2020$PCR
+radscore_df$PCR
+```
+
+# EDA
+
+```{r}
+library(kableExtra)
+library(knitr)
+library(arsenal)
+names(outcome_df_2020)
+control <- arsenal::tableby.control(test = T,
+                                    numeric.stats = c("meansd","medianq1q3","range"),
+                                    ordered.stats = c("Nmiss"),
+                                    digits = 2)
+tbl <- arsenal::tableby(PCR ~ age + sex + group + cT +cN +cTNM +MRF + tumor_length + tumor_thickness + distance +CEA + path +differentiation + radscore, data = outcome_df_2020, control = control)
+
+summary(tbl,text = T) %>%
+  knitr::kable(booktabs = T, caption = "Descriptive Statistics") %>%
+  kable_styling(latex_options = c("striped", "hold_position")) 
 
 ```
 
