@@ -3,7 +3,7 @@ prediction\_model
 Zongchao Liu
 4/11/2020
 
-# Import data
+# Import Data
 
 ``` r
 data = read_csv('./outcome_2020_4.csv') %>%
