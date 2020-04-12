@@ -41,7 +41,7 @@ data = read_csv('./outcome_2020_4.csv') %>%
 levels(data$PCR) = c("N", "Y")
 
 rowTrain = createDataPartition(y = data$PCR,
-                               p = 0.75, # 划分训练测试集
+                               p = 0.9, # 划分训练测试集
                                list = F)
 
 log.fit = train(x = data[rowTrain,c(4:6,8:14,16)], #选定变量，除去了姓名，性别，cTNM
@@ -65,27 +65,27 @@ caret::confusionMatrix(data = factor(test.pred,levels = c("N","Y")),
     ## Confusion Matrix and Statistics
     ## 
     ##           Reference
-    ## Prediction  N  Y
-    ##          N 17  3
-    ##          Y  2  2
+    ## Prediction N Y
+    ##          N 7 1
+    ##          Y 0 1
     ##                                           
-    ##                Accuracy : 0.7917          
-    ##                  95% CI : (0.5785, 0.9287)
-    ##     No Information Rate : 0.7917          
-    ##     P-Value [Acc > NIR] : 0.6168          
+    ##                Accuracy : 0.8889          
+    ##                  95% CI : (0.5175, 0.9972)
+    ##     No Information Rate : 0.7778          
+    ##     P-Value [Acc > NIR] : 0.372           
     ##                                           
-    ##                   Kappa : 0.3182          
+    ##                   Kappa : 0.6087          
     ##                                           
-    ##  Mcnemar's Test P-Value : 1.0000          
+    ##  Mcnemar's Test P-Value : 1.000           
     ##                                           
-    ##             Sensitivity : 0.40000         
-    ##             Specificity : 0.89474         
-    ##          Pos Pred Value : 0.50000         
-    ##          Neg Pred Value : 0.85000         
-    ##              Prevalence : 0.20833         
-    ##          Detection Rate : 0.08333         
-    ##    Detection Prevalence : 0.16667         
-    ##       Balanced Accuracy : 0.64737         
+    ##             Sensitivity : 0.5000          
+    ##             Specificity : 1.0000          
+    ##          Pos Pred Value : 1.0000          
+    ##          Neg Pred Value : 0.8750          
+    ##              Prevalence : 0.2222          
+    ##          Detection Rate : 0.1111          
+    ##    Detection Prevalence : 0.1111          
+    ##       Balanced Accuracy : 0.7500          
     ##                                           
     ##        'Positive' Class : Y               
     ## 
