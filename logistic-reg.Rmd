@@ -1,0 +1,81 @@
+---
+title: "prediction_model"
+author: "Zongchao Liu"
+date: "4/11/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(caret)
+library(tidyverse)
+library(pROC)
+library(MASS)
+library(mlbench)
+library(AppliedPredictiveModeling)
+```
+
+# Import data
+```{r, message=FALSE}
+data = read_csv('./outcome_2020_4.csv') %>%
+  mutate(PCR = factor(PCR),
+         cTNM = factor(cTNM))
+levels(data$PCR) = c("N", "Y")
+```
+
+
+
+# A glance at the difference in radscores (Y = 1, N = 0)
+
+```{r}
+data %>%
+  ggplot(aes(x = radscore, fill = PCR)) +
+  geom_histogram() +
+  facet_grid(PCR ~ .) +
+  ggsci::scale_fill_jama() +
+  theme_bw()
+
+```
+
+
+# The following blocks are for data partition & modeling using logistic reg
+
+```{r,message=FALSE, warning=FALSE}
+set.seed(1)
+ctrl = trainControl(method = "repeatedcv", number = 5, repeats = 5,
+                    classProbs = TRUE,
+                    summaryFunction = twoClassSummary)
+
+data = read_csv('./outcome_2020_4.csv') %>%
+  mutate(PCR = factor(PCR),
+         cTNM = factor(cTNM))
+levels(data$PCR) = c("N", "Y")
+
+rowTrain = createDataPartition(y = data$PCR,
+                               p = 0.75, # 划分训练测试集
+                               list = F)
+
+log.fit = train(x = data[rowTrain,c(4:6,8:14,16)], #选定变量，除去了姓名，性别，cTNM
+                y = data$PCR[rowTrain],
+                method = "glm",
+                metric = "ROC",
+                trControl = ctrl
+                )
+
+
+test.pred.prob = predict(log.fit, newdata = data[-rowTrain,], type = "prob")[,2]
+test.pred = rep("N", length(test.pred.prob ))
+test.pred[test.pred.prob > 0.5] = "Y"
+
+roc.glm = roc(data$PCR[-rowTrain], test.pred.prob)
+caret::confusionMatrix(data = factor(test.pred,levels = c("N","Y")),
+                       reference = data$PCR[-rowTrain],
+                       positive = "Y")
+
+roc.glm = roc(data$PCR[-rowTrain],test.pred.prob)
+plot(roc.glm,
+     legacy.axes = TRUE,
+     print.auc = T)
+
+```
+
+
