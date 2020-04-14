@@ -591,7 +591,8 @@ radscore_df %&gt;%
                         &quot;A&quot; = &quot;1&quot;,
                         &quot;B&quot; = &quot;2&quot;,
                         &quot;C&quot; = &quot;3&quot;,
-                        &quot;c&quot; = &quot;3&quot;))) 
+                        &quot;c&quot; = &quot;3&quot;)),
+         cTNM = factor(cTNM)) 
 
 logistic.fit = glm(PCR ~ radscore, data = radscore_df, family = binomial(link = &quot;logit&quot;)) # only radscore
 
@@ -674,6 +675,7 @@ names(outcome_df_2020)</code></pre>
 ## [16] &quot;radscore&quot;</code></pre>
 <pre class="r"><code>control &lt;- arsenal::tableby.control(test = T,
                                     numeric.stats = c(&quot;meansd&quot;,&quot;medianq1q3&quot;,&quot;range&quot;),
+                                    cat.stats = c(&quot;countrowpct&quot;),
                                     ordered.stats = c(&quot;Nmiss&quot;),
                                     digits = 2)
 tbl &lt;- arsenal::tableby(PCR ~ age + sex + group + cT +cN +cTNM +MRF + tumor_length + tumor_thickness + distance +CEA + path +differentiation + radscore, data = outcome_df_2020, control = control)
@@ -789,13 +791,13 @@ sex
 <li>female
 </td>
 <td style="text-align:left;">
-26 (33.3%)
+26 (78.8%)
 </td>
 <td style="text-align:left;">
-7 (31.8%)
+7 (21.2%)
 </td>
 <td style="text-align:left;">
-33 (33.0%)
+33 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -806,13 +808,13 @@ sex
 <li>male
 </td>
 <td style="text-align:left;">
-52 (66.7%)
+52 (77.6%)
 </td>
 <td style="text-align:left;">
-15 (68.2%)
+15 (22.4%)
 </td>
 <td style="text-align:left;">
-67 (67.0%)
+67 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -837,13 +839,13 @@ group
 <li>1
 </td>
 <td style="text-align:left;">
-26 (33.3%)
+26 (89.7%)
 </td>
 <td style="text-align:left;">
-3 (13.6%)
+3 (10.3%)
 </td>
 <td style="text-align:left;">
-29 (29.0%)
+29 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -854,13 +856,13 @@ group
 <li>2
 </td>
 <td style="text-align:left;">
-16 (20.5%)
+16 (50.0%)
 </td>
 <td style="text-align:left;">
-16 (72.7%)
+16 (50.0%)
 </td>
 <td style="text-align:left;">
-32 (32.0%)
+32 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -871,13 +873,13 @@ group
 <li>3
 </td>
 <td style="text-align:left;">
-36 (46.2%)
+36 (92.3%)
 </td>
 <td style="text-align:left;">
-3 (13.6%)
+3 (7.7%)
 </td>
 <td style="text-align:left;">
-39 (39.0%)
+39 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -902,13 +904,13 @@ cT
 <li>2
 </td>
 <td style="text-align:left;">
-1 (1.3%)
+1 (50.0%)
 </td>
 <td style="text-align:left;">
-1 (4.5%)
+1 (50.0%)
 </td>
 <td style="text-align:left;">
-2 (2.0%)
+2 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -919,13 +921,13 @@ cT
 <li>3
 </td>
 <td style="text-align:left;">
-67 (85.9%)
+67 (79.8%)
 </td>
 <td style="text-align:left;">
-17 (77.3%)
+17 (20.2%)
 </td>
 <td style="text-align:left;">
-84 (84.0%)
+84 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -936,13 +938,13 @@ cT
 <li>4
 </td>
 <td style="text-align:left;">
-10 (12.8%)
+10 (71.4%)
 </td>
 <td style="text-align:left;">
-4 (18.2%)
+4 (28.6%)
 </td>
 <td style="text-align:left;">
-14 (14.0%)
+14 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -967,13 +969,13 @@ cN
 <li>0
 </td>
 <td style="text-align:left;">
-19 (24.4%)
+19 (86.4%)
 </td>
 <td style="text-align:left;">
 3 (13.6%)
 </td>
 <td style="text-align:left;">
-22 (22.0%)
+22 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -987,10 +989,10 @@ cN
 59 (75.6%)
 </td>
 <td style="text-align:left;">
-19 (86.4%)
+19 (24.4%)
 </td>
 <td style="text-align:left;">
-78 (78.0%)
+78 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1006,39 +1008,22 @@ cTNM
 <td style="text-align:left;">
 </td>
 <td style="text-align:left;">
-0.885
+0.138
 </td>
 </tr>
 <tr>
 <td style="text-align:left;">
 <ul>
-<li>Mean (SD)
+<li>1
 </td>
 <td style="text-align:left;">
-2.74 (0.44)
+0 (0.0%)
 </td>
 <td style="text-align:left;">
-2.73 (0.55)
+1 (100.0%)
 </td>
 <td style="text-align:left;">
-2.74 (0.46)
-</td>
-<td style="text-align:left;">
-</td>
-</tr>
-<tr>
-<td style="text-align:left;">
-<ul>
-<li>Median (Q1, Q3)
-</td>
-<td style="text-align:left;">
-3.00 (2.25, 3.00)
-</td>
-<td style="text-align:left;">
-3.00 (3.00, 3.00)
-</td>
-<td style="text-align:left;">
-3.00 (2.75, 3.00)
+1 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1046,16 +1031,33 @@ cTNM
 <tr>
 <td style="text-align:left;">
 <ul>
-<li>Range
+<li>2
 </td>
 <td style="text-align:left;">
-2.00 - 3.00
+20 (83.3%)
 </td>
 <td style="text-align:left;">
-1.00 - 3.00
+4 (16.7%)
 </td>
 <td style="text-align:left;">
-1.00 - 3.00
+24 (100.0%)
+</td>
+<td style="text-align:left;">
+</td>
+</tr>
+<tr>
+<td style="text-align:left;">
+<ul>
+<li>3
+</td>
+<td style="text-align:left;">
+58 (77.3%)
+</td>
+<td style="text-align:left;">
+17 (22.7%)
+</td>
+<td style="text-align:left;">
+75 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1077,33 +1079,16 @@ MRF
 <tr>
 <td style="text-align:left;">
 <ul>
-<li>N-Miss
-</td>
-<td style="text-align:left;">
-1
-</td>
-<td style="text-align:left;">
-0
-</td>
-<td style="text-align:left;">
-1
-</td>
-<td style="text-align:left;">
-</td>
-</tr>
-<tr>
-<td style="text-align:left;">
-<ul>
 <li>0
 </td>
 <td style="text-align:left;">
-59 (76.6%)
+59 (78.7%)
 </td>
 <td style="text-align:left;">
-16 (72.7%)
+16 (21.3%)
 </td>
 <td style="text-align:left;">
-75 (75.8%)
+75 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1114,13 +1099,13 @@ MRF
 <li>1
 </td>
 <td style="text-align:left;">
-18 (23.4%)
+18 (75.0%)
 </td>
 <td style="text-align:left;">
-6 (27.3%)
+6 (25.0%)
 </td>
 <td style="text-align:left;">
-24 (24.2%)
+24 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1405,13 +1390,13 @@ path
 <li>0
 </td>
 <td style="text-align:left;">
-2 (2.6%)
+2 (50.0%)
 </td>
 <td style="text-align:left;">
-2 (9.1%)
+2 (50.0%)
 </td>
 <td style="text-align:left;">
-4 (4.0%)
+4 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1422,13 +1407,13 @@ path
 <li>1
 </td>
 <td style="text-align:left;">
-72 (92.3%)
+72 (80.0%)
 </td>
 <td style="text-align:left;">
-18 (81.8%)
+18 (20.0%)
 </td>
 <td style="text-align:left;">
-90 (90.0%)
+90 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1439,13 +1424,13 @@ path
 <li>2
 </td>
 <td style="text-align:left;">
-3 (3.8%)
+3 (75.0%)
 </td>
 <td style="text-align:left;">
-1 (4.5%)
+1 (25.0%)
 </td>
 <td style="text-align:left;">
-4 (4.0%)
+4 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1456,13 +1441,13 @@ path
 <li>3
 </td>
 <td style="text-align:left;">
-1 (1.3%)
+1 (50.0%)
 </td>
 <td style="text-align:left;">
-1 (4.5%)
+1 (50.0%)
 </td>
 <td style="text-align:left;">
-2 (2.0%)
+2 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1487,13 +1472,13 @@ differentiation
 <li>0
 </td>
 <td style="text-align:left;">
-4 (5.1%)
+4 (57.1%)
 </td>
 <td style="text-align:left;">
-3 (13.6%)
+3 (42.9%)
 </td>
 <td style="text-align:left;">
-7 (7.0%)
+7 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1504,13 +1489,13 @@ differentiation
 <li>1
 </td>
 <td style="text-align:left;">
-30 (38.5%)
+30 (81.1%)
 </td>
 <td style="text-align:left;">
-7 (31.8%)
+7 (18.9%)
 </td>
 <td style="text-align:left;">
-37 (37.0%)
+37 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1521,13 +1506,13 @@ differentiation
 <li>2
 </td>
 <td style="text-align:left;">
-34 (43.6%)
+34 (81.0%)
 </td>
 <td style="text-align:left;">
-8 (36.4%)
+8 (19.0%)
 </td>
 <td style="text-align:left;">
-42 (42.0%)
+42 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1538,13 +1523,13 @@ differentiation
 <li>3
 </td>
 <td style="text-align:left;">
-10 (12.8%)
+10 (71.4%)
 </td>
 <td style="text-align:left;">
-4 (18.2%)
+4 (28.6%)
 </td>
 <td style="text-align:left;">
-14 (14.0%)
+14 (100.0%)
 </td>
 <td style="text-align:left;">
 </td>
@@ -1616,7 +1601,6 @@ radscore
 </tr>
 </tbody>
 </table></li>
-</ul></li>
 </ul></li>
 </ul></li>
 </ul></li>

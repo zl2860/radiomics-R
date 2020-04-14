@@ -257,7 +257,8 @@ outcome_df_2020 = outcome_df_2020 %>%
                         "A" = "1",
                         "B" = "2",
                         "C" = "3",
-                        "c" = "3"))) 
+                        "c" = "3")),
+         cTNM = factor(cTNM)) 
 
 logistic.fit = glm(PCR ~ radscore, data = radscore_df, family = binomial(link = "logit")) # only radscore
 
@@ -279,6 +280,7 @@ library(arsenal)
 names(outcome_df_2020)
 control <- arsenal::tableby.control(test = T,
                                     numeric.stats = c("meansd","medianq1q3","range"),
+                                    cat.stats = c("countrowpct"),
                                     ordered.stats = c("Nmiss"),
                                     digits = 2)
 tbl <- arsenal::tableby(PCR ~ age + sex + group + cT +cN +cTNM +MRF + tumor_length + tumor_thickness + distance +CEA + path +differentiation + radscore, data = outcome_df_2020, control = control)
