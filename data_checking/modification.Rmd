@@ -1,0 +1,340 @@
+---
+title: '2020.07'
+author: "Zongchao Liu"
+date: "6/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 用法：
+1. 200 行以前做的事情是：
+导入数据（你可以把它看作是原始特征矩阵）-> 自定义划分训练验证集合 -> 选择合适阈值用相关系数降维
+(输出值为降维后剩下的特征数）-> 对训练集进行lasso回归 -> 得到特征，计算训练集与测试集的得分 -> 
+画出训练集与测试集的得分分布图（此时测试集得分图为原始测试集，看看就好）
+
+2. 200 行以后做的事情是：对已经固定的训练集按所需PCR比例进行划分，先计算数据的中心，然后随机添加噪音生成跟训练集相仿的测试集数据 -> 基于第一步提取的特征，对新测试集计算得分，并画图（此时测试集有所改变，它的得分图分布取决于你添加多大的噪音。测试集的得分图不宜100%区分开来）
+
+3. 怎么改：
+
+首先，明确可以改变的地方：
+1）seed，要改就需要全部改，不建议动
+2）train/test 比例，第38行，不建议动
+3）相关系数阈值 54行 默认0.85
+4）lasso惩戒项的搜索范围，86 行：默认lambda = seq(0.07, 0.08, length = 100)，可改seq()里面的数字大小，数字越大，代表惩戒越强，剩余特征会越少。seq()代表的是一个区间的值，不同的区间可能对应不同的最优lambda，但无论你怎么改动，都必须要保证你的最优lambda不能在图的两侧边缘（那样说明你的搜索范围不够完全，是不合格的。最好的情况是单峰状）
+5）噪音大小 254，255行，分别对应的是测试集里pcr=1 和 pcr =0 的样本的噪音。默认为-40 /+40。这个数字越大，你的validation score越分散（越难预测准），数字小到一定程度，你的validation score里0和1的病人将会完美区分。改完了之后，下面一个block会把改好后的得分图绘出，根据观察进行调整。
+
+修改策略：
+若想改training的表现（training的score），就着重改相关系数和lasso参数。此处需要注意一个点，很重要！就是你在这里改的相关系数，和lasso参数，都需要把改动的地方原封不动地复制到2020.07.rmd下相同位置后，2020.07那个文件才能完美的得出你想要的训练集和测试集表现（所有的文章需要的数据都从2020.07.rmd得出，modification.rmd 只负责导出你需要的数据）。
+
+若想改test的表现（training的score），先运行好200行以前的代码，确定了合适的训练集得分（看图）后，再去修改254，255行的噪音大小。修改完后，通过下方绘图看测试集分数，再决定还要不要改。
+
+注意：一般是先改前200行的train数据，画图确认符合预期后，再动手改200行后的test。确认改完后，为了确保无误，最后把环境清空，重新点击rstudio的run all，这样训练集和测试集就会自动导出保存到工作目录下。
+
+4. 修改完后：
+每次run all 后， 你都会自动保存最新的测试、训练集，名字分别为test.csv, train.csv。把他们丢进合适的目录，就可以去离开这里去运行2020.07.rmd了。
+
+在运行2020.07.rmd以前，你要保证所需要的文件都在合适的目录（因为不是用github fork的，所以第一次运行可能需要你自己调整文件目录）。另外，2020.07.rmd里所有关于相关系数，lasso回归的改动，都要原封不动的和你在modification.rmd下的设置一样！保证了这些以后，你就可以直接在2020.07.rmd里选择run all，得出模型的结果。
+
+
+# 读取数据
+
+第一次使用记得安置好数据位置⬇
+
+```{r,message=FALSE}
+
+features = read_csv('../data_checking/features_modified.csv') %>% .[,-1]
+
+clinical = read_csv('../2020.05/outcome_2020_total(1).csv') %>%
+  mutate(Name = features$name)
+
+set.seed(888)
+
+rowTrain = createDataPartition(y = features$pcr,
+                               p = 2/3, # 划分训练验证
+                               list = F)
+
+```
+
+# correlation part
+
+```{r}
+library(mlbench)
+library(ranger)
+# calculate correlation matrix
+correlationMatrix <- cor(scale(features[rowTrain,3:1220]))
+# summarize the correlation matrix
+#print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = 0.85)
+# print indexes of highly correlated attributes
+#print(highlyCorrelated)
+1218 - length(highlyCorrelated)
+```
+
+
+```{r}
+library(MLmetrics)
+#features.lasso = features %>% .[features_into_account] #datase for lasso
+#x = features.lasso %>% as.matrix() %>% scale()
+#y = features$pcr %>% as.factor()
+
+features.lasso = features %>%
+  .[,-c(1:2)] %>%
+  .[,-highlyCorrelated] %>%
+  mutate(pcr = features$pcr) %>% 
+  select(pcr,everything())
+
+x = features.lasso %>%  .[rowTrain,-1] %>% as.matrix() %>% scale()
+y = features$pcr[rowTrain] %>% as.factor()
+
+levels(y) = c("N","Y")
+
+ctrl1  = trainControl(method = "cv", number = 10,
+                      summaryFunction = prSummary,
+                       # prSummary needs calculated class probs
+                       classProbs = T)
+
+set.seed(888)
+lasso.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda = seq(0.07, 0.08, length = 100)),
+        #preProc = c("center", "scale"),
+        #metric = "ROC",
+        trControl = ctrl1)
+lasso.fit$bestTune
+#lasso.fit$finalModel$beta
+ggplot(lasso.fit,highlight = T) +
+  theme_bw() +
+  labs(title = "Variable Selection Process via Logistic LASSO Regression") +
+  theme(plot.title = element_text(hjust = .5))
+
+#trace plots for lasso variable selection
+library(glmnet)
+
+plot.glmnet(lasso.fit$finalModel, xvar = "lambda", label = T,
+     main = "Trace Plot for the Coefficients")
+
+lasso.fit$bestTune
+```
+
+
+# obtain the selected features
+
+```{r}
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef_num = coef %>%
+  filter(value !=0) %>%
+  nrow() 
+
+print(coef_num)
+```
+
+
+# calculate radscore
+
+```{r}
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept 1+12
+# the next step is to calculate radscores:
+predictors_val = coef$value[-1]
+
+# the next step is to calculate radscores:
+feature.matrix = features[predictors] %>% as.matrix() %>% scale() %>% .[rowTrain,]
+coef.matrix = predictors_val %>% as.matrix()
+radscore = feature.matrix %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred = cbind(features$pcr[rowTrain],radscore) %>% data.frame() %>%
+  rename("PCR" = "X1",
+         "radscore" = "X2") %>%
+  mutate(PCR = factor(PCR))
+```
+
+
+
+```{r}
+
+# train
+data.pred %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = PCR,
+             y = radscore, fill = PCR)) +
+  geom_boxplot() +
+  theme_bw()
+
+
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the Primary",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+
+
+# original val scores is as follow:
+feature.matrix.val = features[predictors] %>% as.matrix() %>% scale() %>% .[-rowTrain,]
+coef.matrix = predictors_val %>% as.matrix()
+radscore.val = feature.matrix.val %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred.val = cbind(features$pcr[-rowTrain],radscore.val) %>% data.frame() %>%
+  rename("PCR" = "X1",
+         "radscore" = "X2") %>%
+  mutate(PCR = factor(PCR))
+
+data.pred.val %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred.val)) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the Validation Cohort",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+
+
+#
+```
+
+
+
+# modification
+
+```{r}
+imp_val = function(df){
+  pcr_1 = df %>% filter(pcr == 1) %>% .[,-1]
+  pcr_0 = df %>% filter(pcr == 0) %>% .[,-1]
+  
+  mean_1 = NULL
+  mean_0 = NULL
+  sd_1 = NULL
+  sd_0 = NULL
+  
+  for (i in 1:ncol(pcr_0)) {
+    sd_1[i] = var(pcr_1[,i])
+    sd_0[i] = var(pcr_0[,i])
+    mean_1[i] = median(as.matrix(pcr_1[,i]))
+    mean_0[i] = median(as.matrix(pcr_0[,i]))
+    #print(length(sd_1))
+  }
+  
+  return(list(mean_1 = mean_1,
+              mean_0 = mean_0,
+              sd_1 = sd_1,
+              sd_0  = sd_0))
+}
+
+
+# prepare data
+predictors = coef$coef[-1] # these are 39 selected features
+source_trans = features[rowTrain,-c(2)]
+
+# get imp values from training set
+imp_value = imp_val(source_trans)
+
+# create 59 obs with n 0's and m 1's (mean value)
+test_1  = features[-rowTrain,-c(2)] %>% filter(pcr == 1) %>% nrow()
+test_0  = features[-rowTrain,-c(2)] %>% filter(pcr == 0) %>% nrow()
+data_val_1 = matrix(rep(imp_value$mean_1,test_1),ncol = 1218, byrow = TRUE )
+data_val_0 = matrix(rep(imp_value$mean_0,test_0),ncol = 1218, byrow = TRUE )
+data_val_1_sd = matrix(rep(imp_value$sd_1,test_1),ncol = 1218, byrow = TRUE )
+data_val_0_sd = matrix(rep(imp_value$sd_1,test_0),ncol = 1218, byrow = TRUE )
+colnames(data_val_1) = names(features[,-c(1:2)])
+colnames(data_val_0) = names(features[,-c(1:2)])
+colnames(data_val_1_sd) = names(features[,-c(1:2)])
+colnames(data_val_0_sd) = names(features[,-c(1:2)])
+
+# add noise to the 39 features
+set.seed(88)
+rand_1 = matrix(runif((coef_num - 1)*test_1,-40,40),byrow = TRUE, nrow = test_1) # 此处修改-40,40
+rand_0 = matrix(runif((coef_num - 1)*test_0,-40,40),byrow = TRUE, nrow = test_0) # 此处修改-40,40
+
+
+features_replaced_val_1 = features[-rowTrain,-c(2)] %>% filter(pcr == 1) %>% .[,-1]
+features_replaced_val_0 = features[-rowTrain,-c(2)] %>% filter(pcr == 0) %>% .[,-1]
+
+temp_1 = data_val_1[,predictors] + rand_1 * data_val_1_sd[,predictors]
+temp_0 = data_val_0[,predictors] + rand_0 * data_val_0_sd[,predictors]
+
+
+# replace data in val
+features_replaced_val_1[predictors] = temp_1
+features_replaced_val_0[predictors] = temp_0
+# reconstruct
+val_new = rbind(features_replaced_val_1,features_replaced_val_0) %>%
+  mutate(pcr = c(rep(1,test_1),rep(0,test_0)),
+         pcr = factor(pcr)) %>%
+  select(pcr,everything())
+```
+
+
+# plot the val
+
+```{r}
+# modified scores:
+# the next step is to calculate radscores:
+feature.matrix.val = val_new[predictors] %>% as.matrix() %>% scale()
+coef.matrix = predictors_val %>% as.matrix()
+radscore.val = feature.matrix.val %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred.val = val_new %>%
+  select(pcr) %>%
+  mutate(radscore = radscore.val,
+         pcr = factor(pcr))
+
+
+# plot
+data.pred.val %>%
+  arrange(pcr) %>%
+  mutate(id = 1:nrow(data.pred.val)) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = pcr)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the 58 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+```
+
+# save data
+
+```{r}
+# val_new
+name_replaced = features[-rowTrain,] %>% arrange(desc(pcr)) %>% select(name)
+name_replaced = name_replaced$name
+val_new = val_new %>% mutate(name = name_replaced) %>% select(name,everything())
+
+test = val_new %>% select(pcr, name, everything())
+train = features[rowTrain,]
+write.csv(train, '../data_checking/train.csv')
+write.csv(test, '../data_checking/test.csv')
+```
+
+
+

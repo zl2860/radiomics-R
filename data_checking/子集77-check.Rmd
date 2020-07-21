@@ -1,0 +1,257 @@
+---
+title: "check_77"
+author: "Zongchao Liu"
+date: "6/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(ModelMetrics)
+library(readxl)
+library(knitr)
+```
+
+# import data
+## features
+```{r, message=FALSE}
+features77 = read_csv('./data_checking/feature_extracted_77.csv') %>% .[,-c(1:39)]
+
+```
+
+
+## clinical(PCR)
+```{r}
+data.2020.5= 
+  read_xlsx('./outcome_2020_5.xlsx') %>%
+  rename("Name" = "姓名",
+         "Age" = "年龄",
+         "Sex" = "性别",
+         "Group" = "组别（无序分类）",
+         "cT" = "cT（有序分类）",
+         "cN" = "cN（有序分类）",
+         "MRF" = "MRF阳性（二分类）",
+         "Tumor length" = "肿瘤长度（连续数值）",
+         "Tumor thickness" = "肿瘤厚度（连续数值）",
+         "Distance" = "治疗前肛缘距离（连续数值）",
+         "CEA" = "治疗前CEA（连续数值）",
+         "Patho." = "活检病理类型（无序分类）",
+         "Differentiation" = "活检分化程度（有序分类）") %>%
+  mutate(Age = as.numeric(Age),
+         Age = ifelse(Age <= 60 , 0, 1),
+         Sex = factor(recode(Sex, "男" = "Male", "女" = "Female")),
+         cN = ifelse(cN == "0","0","1"),
+         cT = recode(cT, "3A" = "3", 
+                     "3b" = "3",
+                     "3B" = "3",
+                     "3C" = "3",
+                     "3d" = "3",
+                     "3D" = "3",
+                     "4A" = "4",
+                     "4b" = "4",
+                     "4B" = "4",
+                     "4A" = "4"),
+         Patho. = as.character(Patho.),
+         Differentiation = factor(Differentiation,levels = c(0,1,2,3)),
+         PCR = factor(PCR, levels = c("0", "1")),
+         Group = recode(Group, "1" = "A",
+                        "2" = "B",
+                        "3" = "C",
+                        "c" = "C"),
+         cTNM = ifelse(cTNM == 0, 1, cTNM),
+         cTNM = factor(cTNM,levels = c("1","2","3"))) %>%
+  mutate(cN = factor(cN),
+         cT = factor(cT),
+         Differentiation = ifelse(Differentiation == 0 | Differentiation == 1, "0", "1" ),
+         Distance = ifelse(Distance <= 5, 0, 1),
+         CEA = ifelse(CEA <= 5, 0, 1))
+#######################整理完了################不要再动这77例####################
+skimr::skim(data.2020.5) #缺失一个tumor thickness
+data.2020.5 %>% filter(is.na(`Tumor thickness`) == TRUE)
+#计算均值填补
+data.2020.5 %>% .[-20,] %>% filter(PCR == 0) %>% filter(is.na(`Tumor thickness`) == FALSE) %>% mutate(`Tumor thickness` = as.numeric(`Tumor thickness`)) %>% summarise(mean = mean(`Tumor thickness`)) #16.03333	
+
+data.2020.5[20,10] = 16.03333	
+data.2020.5[9,10] = 16.03333	
+#######################整理完了################不要再动这77例####################
+#skimr::skim(data.2020.5) #暂时没有缺失
+```
+
+# reduce dimension
+
+```{r}
+library(mlbench)
+library(ranger)
+# calculate correlation matrix
+correlationMatrix <- cor(scale(features77))
+# summarize the correlation matrix
+#print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = 0.75)
+# print indexes of highly correlated attributes
+#print(highlyCorrelated)
+length(highlyCorrelated)
+```
+
+#lasso test
+
+```{r}
+
+x = features77 %>% scale() #.[,-highlyCorrelated]
+y = data.2020.5$PCR %>% as.factor()
+
+levels(y) = c("N","Y")
+
+ctrl1  = trainControl(method = "cv", number = 10,
+                      summaryFunction = prSummary,
+                       # prSummary needs calculated class probs
+                       classProbs = T)
+
+set.seed(888)
+lasso.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-5, -1, length=1000))),
+        #preProc = c("center", "scale"),
+        metric = "ROC",
+        trControl = ctrl1)
+lasso.fit$bestTune
+#lasso.fit$finalModel$beta
+ggplot(lasso.fit,highlight = T) +
+  theme_bw() +
+  labs(title = "Variable Selection Process via Logistic LASSO Regression") +
+  theme(plot.title = element_text(hjust = .5))
+
+#trace plots for lasso variable selection
+library(glmnet)
+
+plot.glmnet(lasso.fit$finalModel, xvar = "lambda", label = T,
+     main = "Trace Plot for the Coefficients")
+
+lasso.fit$bestTune
+
+# features selected
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef %>%
+  filter(value !=0) %>%
+  nrow()
+
+# calculate score
+
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept 1+12
+# the next step is to calculate radscores:
+predictors_val = coef$value[-1]
+
+# the next step is to calculate radscores:
+feature.matrix = features77[predictors] %>% as.matrix() %>% scale()
+coef.matrix = predictors_val %>% as.matrix()
+radscore = feature.matrix %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred = data.2020.5 %>%
+  mutate(radscore = as.vector(radscore),
+         PCR = factor(PCR))
+
+# plot scores
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the 77 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+```
+
+如图，使用77人子集，做lasso回归选择特征 AUC较高，说明情况比较好。下面看看划分验证集的结果：
+
+```{r}
+rowTrain = createDataPartition(y = data.2020.5$PCR,
+                               p = 2/3, # 划分训练验证
+                               list = F)
+
+x_train = x[rowTrain,]
+y_train = y[rowTrain]
+
+
+set.seed(888)
+lasso.fit = train(x_train, y_train,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-5, -1, length=1000))),
+        #preProc = c("center", "scale"),
+        metric = "AUC",
+        trControl = ctrl1)
+lasso.fit$bestTune
+#lasso.fit$finalModel$beta
+ggplot(lasso.fit,highlight = T) +
+  theme_bw() +
+  labs(title = "Variable Selection Process via Logistic LASSO Regression") +
+  theme(plot.title = element_text(hjust = .5))
+
+#trace plots for lasso variable selection
+library(glmnet)
+
+plot.glmnet(lasso.fit$finalModel, xvar = "lambda", label = T,
+     main = "Trace Plot for the Coefficients")
+
+lasso.fit$bestTune
+
+# features selected
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef %>%
+  filter(value !=0) %>%
+  nrow()
+
+# calculate score
+
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept 1+12
+# the next step is to calculate radscores:
+predictors_val = coef$value[-1]
+
+# the next step is to calculate radscores:
+feature.matrix = features77[predictors] %>% as.matrix() %>% scale()
+coef.matrix = predictors_val %>% as.matrix()
+radscore = feature.matrix %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred = data.2020.5 %>%
+  mutate(radscore = as.vector(radscore),
+         PCR = factor(PCR))
+
+# plot scores
+data.pred[-rowTrain,] %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred[-rowTrain,])) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the Validation",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+```
+
