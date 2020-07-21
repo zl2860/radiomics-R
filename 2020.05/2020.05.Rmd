@@ -1,0 +1,695 @@
+---
+title: '2020.05'
+author: "Zongchao Liu"
+date: "4/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE)
+library(tidyverse)
+library(caret)
+library(ModelMetrics)
+library(glmnet)
+```
+
+# Import and check data
+
+```{r,message=FALSE}
+features = read_csv('./feature_extracted_total177.csv')
+clinical = read_csv('./outcome_2020_total(1).csv') %>%
+  mutate(Name = features$name)
+#skimr::skim(clinical)
+#skimr::skim(features) 0 missing values
+```
+
+# pre filter features by corr
+
+```{r}
+#var_0 = features %>%
+#  filter(pcr == 0)
+#var_1 = features %>%
+#  filter(pcr != 0)
+#var = colnames(features)[-c(1:2)] # may change index
+#
+#sig_vec = vector()
+#for (variable in var) {
+#  #print(variable)
+#  test.sig= t.test(pull(var_0,variable),pull(var_1,variable))$p.value
+#  sig_vec = append(sig_vec, test.sig)
+#}
+#
+#sig.total = tibble(
+#  var = var,
+#  sig = sig_vec
+#) %>%
+#  filter(sig <0.1)
+#
+#features_into_account = sig.total$var
+#length(features_into_account) #94
+
+
+#t = scale(features[,3:1220])
+# filter the features based on correlation
+library(mlbench)
+library(ranger)
+# calculate correlation matrix
+correlationMatrix <- cor(scale(features[,3:1220]))
+# summarize the correlation matrix
+#print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff = 0.55)
+# print indexes of highly correlated attributes
+#print(highlyCorrelated)
+length(highlyCorrelated)
+```
+
+# correlation matrix
+
+```{r}
+library(ggcorrplot)
+ # correlation for the all rad-features
+#pheatmap::pheatmap(cor.all,cluster_rows = F,cluster_cols = F,show_rownames = F,show_colnames = #F,main = "Corrlation Matrix for All Extracted Radiomic Features") #随缘画的
+#heatmap(correlationMatrix,labRow = F,labCol = F,main = "Corrlation Matrix for All Extracted #Radiomic Features", xlab = "The 1 ~ 1219 Originally Extracted Features",ylab = "The 1 ~ 1219 #Originally Extracted Features",dendrogram='none') 
+cor.lowcorr = cor(features[,-c(1,2,highlyCorrelated)])
+colnames(cor.lowcorr) = as.character(seq(1:length(colnames(cor.lowcorr))))
+rownames(cor.lowcorr) = as.character(seq(1:length(colnames(cor.lowcorr))))
+
+ggcorrplot(cor.lowcorr,
+           #type = "lower",
+           outline.color = "white",
+           colors = c("#6D9EC1", "white", "#E46726")) +
+  labs(x = "Features ID",
+       title = "Correlation Matrix for the 47 Selected Radiomics Features at the First Stage",
+       y = "Features ID") +
+  theme(plot.title = element_text(hjust=.5))# selected features
+```
+
+
+# LASSO
+
+```{r}
+library(MLmetrics)
+#features.lasso = features %>% .[features_into_account] #datase for lasso
+#x = features.lasso %>% as.matrix() %>% scale()
+#y = features$pcr %>% as.factor()
+
+features.lasso = features[,-highlyCorrelated] %>%
+  .[,-1] %>%
+  mutate(pcr = features$pcr) %>% 
+  select(pcr,everything())
+
+x = features.lasso %>%  .[,-1] %>% as.matrix() %>% scale()
+y = features$pcr %>% as.factor()
+
+levels(y) = c("N","Y")
+
+ctrl1  = trainControl(method = "cv", number = 10,
+                      summaryFunction = prSummary,
+                       # prSummary needs calculated class probs
+                       classProbs = T)
+
+set.seed(888)
+lasso.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-10, -5, length=1000))),
+        #preProc = c("center", "scale"),
+        metric = "ROC",
+        trControl = ctrl1)
+lasso.fit$bestTune
+#lasso.fit$finalModel$beta
+ggplot(lasso.fit,highlight = T) +
+  theme_bw() +
+  labs(title = "Variable Selection Process via Logistic LASSO Regression") +
+  theme(plot.title = element_text(hjust = .5))
+
+#trace plots for lasso variable selection
+library(glmnet)
+
+plot.glmnet(lasso.fit$finalModel, xvar = "lambda", label = T,
+     main = "Trace Plot for the Coefficients")
+
+lasso.fit$bestTune
+```
+
+# calculate radscores
+
+```{r}
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef %>%
+  filter(value !=0) %>%
+  nrow() # number of useful predictors
+
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept 1+12
+# the next step is to calculate radscores:
+predictors_val = coef$value[-1]
+
+# the next step is to calculate radscores:
+feature.matrix = features[predictors] %>% as.matrix() %>% scale()
+coef.matrix = predictors_val %>% as.matrix()
+radscore = feature.matrix %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred = clinical %>%
+  mutate(radscore = as.vector(radscore),
+         PCR = factor(PCR))
+
+write.csv(data.pred,"./CTscore177.csv")
+```
+
+
+
+# check radscore
+
+```{r}
+data.pred %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = PCR,
+             y = radscore, fill = PCR)) +
+  geom_boxplot() +
+  theme_bw()
+
+
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,radscore), y = radscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Radscores for the 177 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+
+
+```
+
+
+# organizing data
+
+```{r}
+#rf.score = read_csv("../rf.score_simple.csv") %>% as.matrix() %>% .[,-1]
+data.pred = data.pred %>%
+  mutate(Age = factor(Age),
+         cT = ifelse(cT == 2, 3, cT),
+         cT = factor(cT),
+         cN = factor(cN),
+         cTNM = factor(cTNM),
+         MRF = as.character(MRF),
+         `Tumor length` = factor(`Tumor length`),
+         Distance = factor(Distance),
+         CEA = factor(CEA),
+         Differentiation = factor(Differentiation),
+         Group = ifelse(Group == "C", "B", Group)
+         #rf.score = rf.score
+         ) # 有3个2，这样很可能导致无法交叉验证，先变成3看看
+#2020.5.10 加入了rf.score
+str(data.pred$PCR)
+```
+
+# reg
+
+```{r,message=FALSE,warning=FALSE}
+set.seed(888)
+ctrl = trainControl(method = "repeatedcv", number = 10, repeats = 5,
+                    classProbs = TRUE,
+                    summaryFunction = twoClassSummary)
+
+levels(data.pred$PCR) = c("N", "Y")
+
+
+rowTrain = createDataPartition(y = data.pred$PCR,
+                               p = 2/3, # 划分训练验证
+                               list = F)
+
+rad.fit = train(x = data.pred[rowTrain,c(2:13,15)], # radscore and others
+                y = data.pred$PCR[rowTrain],
+                method = "glm",
+                metric = "ROC",
+                trControl = ctrl
+                ) #radscore and others (logistic
+
+x.lasso = model.matrix(PCR ~. ,data.pred[rowTrain,c(2:15)])
+y.lasso = data.pred[rowTrain,c(2:15)]$PCR
+
+lasso.predict.fit = train(x = x.lasso, # radscore with others (lasso)
+                y = y.lasso,
+                method = "glmnet",
+                tuneGrid = expand.grid(alpha = 1,lambda = exp(seq(-5, 5, length=1000))),
+                preProc = c("center", "scale"),
+                trControl = ctrl)
+
+rad_and_group.fit = train(x = data.pred[rowTrain,c(4,15)], # only radscore and group(logistic)
+                y = data.pred$PCR[rowTrain],
+                method = "glm",
+                metric = "ROC",
+                trControl = ctrl
+                )
+
+all_other.fit = train(x = data.pred[rowTrain,c(2:13)], # only others
+                y = data.pred$PCR[rowTrain],
+                method = "glm",
+                metric = "ROC",
+                trControl = ctrl
+                )
+
+test.pred.prob = predict(rad.fit, newdata = data.pred[-rowTrain,] , type = "prob")[,2]
+test.pred = rep("N", length(test.pred.prob ))
+test.pred[test.pred.prob > 0.5] = "Y"
+
+caret::confusionMatrix(data = factor(test.pred,levels = c("N","Y")),
+                       reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+```
+
+# random forest
+
+```{r}
+
+rf.grid = expand.grid(mtry = 1:6,
+                       splitrule = "gini",
+                       min.node.size = 20:30
+                      )
+set.seed(888)
+rf.fit = train(PCR ~ ., data.pred[rowTrain,-1], 
+                #subset = rowTrain,
+                method = "ranger",
+                tuneGrid = rf.grid,
+                metric = "ROC",
+                trControl = ctrl)
+
+#rf.fit = train(PCR ~ ., data.pred[rowTrain,-1], 
+#                #subset = rowTrain,
+#                method = "rf",
+#                ntree = 1000,
+#                tuneGrid = data.frame(mtry = 1:6),
+#                metric = "ROC",
+#                trControl = ctrl)
+
+
+rf.fit$bestTune
+ggplot(rf.fit, highlight = TRUE) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Random Forest") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci::scale_color_lancet()
+
+
+set.seed(888)
+data.pred.rf = data.pred
+colnames(data.pred.rf) = make.names(colnames(data.pred.rf))
+rf.final = ranger(PCR ~ ., 
+                  data.pred.rf[rowTrain,-1], 
+                  mtry = 6, 
+                  splitrule = "gini",
+                  min.node.size = 29,
+                  importance = "impurity")
+
+# var importance
+vip::vip(rf.final) + theme_bw() + ggtitle("Variable Importance - RF")
+barplot(sort(ranger::importance(rf.final), decreasing = FALSE),
+        las = 2, 
+        horiz = TRUE, 
+        cex.names = 0.6,
+        col = colorRampPalette(colors = c("black","gold"))(20))
+
+
+# explain prediction
+# fixed a small bug
+library(lime)
+new_obs = data.pred[-rowTrain,-c(1)][c(3,8),]
+explainer.rf = lime(data.pred[rowTrain,-c(1)], rf.fit)
+explanation.rf = lime::explain(new_obs, explainer.rf, n_features = 8, labels = "Y")
+
+plot_features(explanation.rf)
+plot_explanations(explanation.rf)
+#attention!!! => actual result: case 1 is N, case 2 is Y
+
+
+```
+
+
+# boosting
+
+```{r}
+gbmB.grid = expand.grid(n.trees = c(3500,4000,4500),
+                        interaction.depth = 1:4,
+                        shrinkage = c(0.0008,0.001,0.0015),
+                        n.minobsinnode = 10:20) # 2 originally
+set.seed(888)
+# Binomial loss function
+gbmB.fit = train(PCR ~ ., data.pred[rowTrain,-1],
+                 tuneGrid = gbmB.grid,
+                 trControl = ctrl,
+                 method = "gbm",
+                 distribution = "bernoulli",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(gbmB.fit, highlight = T) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Gradient Boosting Model") +
+  theme(plot.title = element_text(hjust = .5)) #+
+  #ggsci::scale_color_lancet()
+gbmB.fit$bestTune
+
+vip::vip(gbmB.fit$finalModel) + theme_bw() + ggtitle("Variable Importance - GBM")
+summary(gbmB.fit$finalModel, las = 2, cBars = 19, cex.names = 0.6)
+
+explainer.gbm = lime(data.pred[rowTrain,-1], gbmB.fit)
+explanation.gbm = explain(new_obs, explainer.gbm, n_features = 8,labels = "Y")
+plot_features(explanation.gbm)
+
+```
+
+# Decision Tree
+
+```{r}
+#data.pred.tree = data.pred
+#colnames(data.pred.tree) = make.names(colnames(data.pred.tree))
+#library(rpart.plot)
+#tree.fit = train(PCR ~ ., data.pred.tree[rowTrain,-1],
+#                 method = "rpart",
+#                 metric = "ROC",
+#                 trControl = ctrl,
+#                 tuneGrid = data.frame(cp = exp(seq(-9,-1, len = 100))))
+#
+#ggplot(tree.fit,highlight = T)
+#rpart.plot(tree.fit$finalModel)
+```
+
+
+# resample
+
+```{r}
+res = resamples(list(only_radscore = rad.fit,
+                     rad_and_group = rad_and_group.fit,
+                     all_other = all_other.fit,
+                     rf = rf.fit,
+                     gbmB = gbmB.fit),
+                     metric = "ROC")
+summary(res)
+bwplot(res)
+
+```
+
+
+# radscores by groups
+
+```{r}
+library(pROC)
+
+
+roc = roc(data.pred$PCR,data.pred$radscore)
+plot(roc,
+     auc.polygon = TRUE,
+     grid=c(0.1, 0.2), 
+     grid.col = c("green", "red"), 
+     max.auc.polygon = TRUE,
+     auc.polygon.col = "skyblue", 
+     print.thres=TRUE)
+# thre_value = -1.270
+
+data.tbl = data.pred %>%
+  mutate(radscore_cat = ifelse(radscore >= -1.270, "High", "Low"))
+```
+
+# table 1 grouped by radscores
+
+```{r}
+library(kableExtra)
+label = rep("Primary Cohort",177)
+label[-rowTrain] = "Validation Cohort"
+data.tbl = data.tbl %>%
+  mutate(cohort = label)
+
+primary = data.tbl[rowTrain,]
+validation = data.tbl[-rowTrain,]
+
+
+control = arsenal::tableby.control(test = T,
+                                    numeric.stats = c("meansd","medianq1q3","range"),
+                                    #cat.stats = c("countrowpct"),
+                                    ordered.stats = c("Nmiss"),
+                                    digits = 2)
+
+tbl_primary = arsenal::tableby(PCR~ Age + Sex + Group + cT + cN +cTNM + MRF + `Tumor length` + `Tumor thickness` + Distance + CEA  + Differentiation + radscore, data = primary,control = control)
+
+tbl_validation = arsenal::tableby(PCR~ Age + Sex + Group + cT + cN +cTNM + MRF + `Tumor length` + `Tumor thickness` + Distance + CEA  + Differentiation + radscore, data = validation, control = control)
+
+summary(tbl_primary,text = T) %>%
+  knitr::kable(booktabs = T, caption = "Descriptive Statistics") %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+  
+  
+summary(tbl_validation,text = T) %>%
+  knitr::kable(booktabs = T, caption = "Descriptive Statistics") %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+
+# Making ROC curves for logistic regression Models
+
+## for training set
+
+```{r}
+# rad.fit ROC (radscore and others)
+rad.fit.pred.train.prob = predict(rad.fit,newdata = data.pred[rowTrain,],type = "prob")[,2]# select pos resp
+rad.fit.pred.train = rep("N",length(rad.fit.pred.train.prob))
+rad.fit.pred.train[rad.fit.pred.train.prob > 0.5] = "Y"
+
+roc.rad.fit = roc(data.pred$PCR[rowTrain], rad.fit.pred.train.prob)
+plot(roc.rad.fit,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rad.fit)
+#plot(smooth(rad_and_group.fit.fit),
+     #add = T,
+     #col = 4)
+# only radscore and groups
+rad_group.fit.pred.train.prob = predict(rad_and_group.fit ,newdata = data.pred[rowTrain,],type = "prob")[,2]# select pos resp
+rad_group.fit.pred.train = rep("N",length(rad_group.fit.pred.train.prob))
+rad_group.fit.pred.train[rad_group.fit.pred.train.prob > 0.5] = "Y"
+
+roc.rad_group.fit = roc(data.pred$PCR[rowTrain], rad_group.fit.pred.train.prob)
+plot(roc.rad_group.fit,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rad_group.fit)
+
+# RF train ROC
+rf.fit.pred.train.prob = predict(rf.fit,newdata = data.pred[rowTrain,-1],type = "prob")[,2]# select pos resp
+rf.fit.pred.train = rep("N",length(rf.fit.pred.train.prob))
+rf.fit.pred.train[rf.fit.pred.train.prob > 0.5] = "Y"
+
+roc.rf.fit = roc(data.pred$PCR[rowTrain], rf.fit.pred.train.prob)
+plot(roc.rf.fit,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rf.fit)
+
+# Boosting train ROC
+gbmB.fit.pred.train.prob = predict(gbmB.fit, newdata = data.pred[rowTrain,-1], type = "prob")[,2]# select pos resp
+gbmB.fit.pred.train = rep("N",length(gbmB.fit.pred.train.prob))
+gbmB.fit.pred.train[gbmB.fit.pred.train.prob > 0.5] = "Y"
+
+roc.gbmB.fit = roc(data.pred$PCR[rowTrain], gbmB.fit.pred.train.prob)
+plot(roc.gbmB.fit,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbmB.fit)
+
+
+plot(roc.rad.fit, print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.1,auc.polygon.col="gray", grid = c(0.5, 0.3), max.auc.polygon=TRUE,legen = T,main = "Primary Cohort")
+plot.roc(roc.rf.fit,add=T,col="red", print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.2)
+plot.roc(roc.gbmB.fit,add=T,col="blue",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.3,)
+plot.roc(roc.rad_group.fit,add=T,col="yellow",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.4)
+legend("bottomright",legend = c("radscore with other clinical variables",
+                  "radscore with `group`",
+                  "random forest",
+                  "gradient boosting model",
+                  "SVM"),
+       col = c("black","yellow","red","blue"),lwd = 4,cex = 0.35)
+```
+
+## for validation set 
+
+```{r}
+# rad.fit ROC (radscore and others)
+rad.fit.pred.test.prob = predict(rad.fit,newdata = data.pred[-rowTrain,],type = "prob")[,2]# select pos resp
+rad.fit.pred.test = rep("N",length(rad.fit.pred.test.prob))
+rad.fit.pred.test[rad.fit.pred.test.prob > 0.5] = "Y"
+
+roc.rad.fit.test = roc(data.pred$PCR[-rowTrain], rad.fit.pred.test.prob)
+plot(roc.rad.fit.test,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rad.fit.test)
+#plot(smooth(rad_and_group.fit.fit),
+     #add = T,
+     #col = 4)
+
+# only radscore and groups
+rad_group.fit.pred.test.prob = predict(rad_and_group.fit ,newdata = data.pred[-rowTrain,],type = "prob")[,2]# select pos resp
+rad_group.fit.pred.test = rep("N",length(rad_group.fit.pred.test.prob))
+rad_group.fit.pred.test[rad_group.fit.pred.test.prob > 0.5] = "Y"
+
+roc.rad_group.fit.test = roc(data.pred$PCR[-rowTrain], rad_group.fit.pred.test.prob)
+plot(roc.rad_group.fit.test,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rad_group.fit.test)
+
+# RF train ROC
+rf.fit.pred.test.prob = predict(rf.fit,newdata = data.pred[-rowTrain,-1],type = "prob")[,2]# select pos resp
+rf.fit.pred.test = rep("N",length(rf.fit.pred.test.prob))
+rf.fit.pred.test[rf.fit.pred.test.prob > 0.5] = "Y"
+
+roc.rf.fit.test = roc(data.pred$PCR[-rowTrain], rf.fit.pred.test.prob)
+plot(roc.rf.fit.test,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.rf.fit.test)
+
+# Boosting test ROC
+gbmB.fit.pred.test.prob = predict(gbmB.fit,newdata = data.pred[-rowTrain,-1], type = "prob")[,2]# select pos resp
+gbmB.fit.pred.test = rep("N",length(gbmB.fit.pred.test.prob))
+gbmB.fit.pred.test[gbmB.fit.pred.test.prob > 0.5] = "Y"
+
+roc.gbmB.fit.test = roc(data.pred$PCR[-rowTrain], gbmB.fit.pred.test.prob)
+plot(roc.gbmB.fit.test,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbmB.fit.test)
+
+
+plot(roc.rad.fit.test, print.auc=TRUE,print.auc.x = 0.3,print.auc.y= 0.1,grid = c(0.5, 0.3), max.auc.polygon=TRUE,legen = T,main = "Validation Cohort")
+plot.roc(roc.rf.fit.test,add=T,col="red", print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.2)
+plot.roc(roc.gbmB.fit.test,add=T,col="blue",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.3,)
+plot.roc(roc.rad_group.fit.test,add=T,col="yellow",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.4)
+legend("bottomright",legend = c("radscore with other clinical variables",
+                  "radscore with `group`",
+                  "random forest",
+                  "gradient boosting model",
+                  "SVM"),
+       col = c("black","yellow","red","blue"),lwd = 4,cex = 0.35)
+```
+
+
+# logsitic regression's caliberation & HL test
+
+```{r}
+#?calibration()
+trainProbs = data.frame(
+obs = data.pred$PCR[rowTrain],
+rad = 1-rad.fit.pred.train.prob,
+rf = 1-rf.fit.pred.train.prob,
+rad_and_group = 1-rad_group.fit.pred.train.prob,
+gbm = 1-gbmB.fit.pred.train.prob)
+
+testProbs = data.frame(
+  obs = data.pred$PCR[-rowTrain],
+  rad = 1-rad.fit.pred.test.prob,
+  rf = 1-rf.fit.pred.test.prob,
+  rad_and_group = 1-rad_group.fit.pred.test.prob,
+  gbm = 1-gbmB.fit.pred.test.prob
+)
+
+cal.int = calibration(obs ~ rad +
+                        rf + 
+                        rad_and_group + gbm,
+                        data = trainProbs)
+cal.ext = calibration(obs ~ rad + 
+                        rf + rad_and_group +gbm 
+                      , data = testProbs)
+
+plot(cal.int,type = "l",auto.key = list(columns = 4,
+                                          lines = TRUE,
+                                          points = FALSE),
+     main = "Calibration Curves for Primary Cohort")
+
+plot(cal.ext,type = "l",auto.key = list(columns = 4,
+                                          lines = TRUE,
+                                          points = FALSE),
+     main = "Calibration Curves for Validation Cohort")
+
+
+```
+
+# results of the logsitic regression
+```{r}
+# radscore and other variables
+summary(rad.fit$finalModel)
+# radscore and group
+summary(rad_and_group.fit$finalModel)
+
+
+```
+
+# Sen,Spec,PPV,NPV
+
+```{r}
+# validation results
+caret::confusionMatrix(factor(rad.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(rad_group.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(rf.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(gbmB.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+
+
+#http://vassarstats.net/clin1.html#return
+
+```
+
+```{r}
+# primary results
+caret::confusionMatrix(factor(rad.fit.pred.train),reference = data.pred$PCR[rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(rad_group.fit.pred.train),reference = data.pred$PCR[rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(rf.fit.pred.train),reference = data.pred$PCR[rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(gbmB.fit.pred.train),reference = data.pred$PCR[rowTrain],
+                       positive = "Y")
+```
+
+
+# univariate logistic for table 2
+
+```{r,message=FALSE}
+var = names(clinical)[-c(1,14)]
+for (i in c(2:13,ncol(data.pred))) {
+  dat = data.pred[,c(i,14)]
+  #print(names(dat)[1])
+  res = glm(PCR ~ ., data = dat, family = binomial(link = "logit"))
+  print("Point.est")
+  print(exp(coef(res)[2]))
+  print(exp(confint(res)[2,]))
+  print("P.val")
+  print(coef(summary(res))[2,4])
+  }
+
+
+```
+
+
+# multi-variate

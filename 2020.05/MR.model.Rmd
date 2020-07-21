@@ -1,0 +1,535 @@
+---
+title: "MRI"
+author: "Zongchao Liu"
+date: "5/19/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+```
+
+# 追加最新的45例MRI data
+
+```{r,message=FALSE}
+features_new = read_csv('../MRI_data/mri-2.csv')
+selected.patients_new = read_csv("../MRI_data/primary2.csv") %>%
+  select(PCR) %>%
+  mutate(PCR = factor(PCR))
+MRI.features_new = read_csv('../MRI_data/mri-2.csv') %>%
+  .[,-c(1:38)] %>%
+  cbind(selected.patients_new) %>%
+  select(PCR, everything())
+
+```
+
+This is only for the MRI data
+
+# import data
+
+```{r,message=FALSE}
+selected.patients = read_csv("../MRI_data/mri_names.csv",col_names = F) %>%
+  select(2) %>%
+  rename("Name" = "X2") %>%
+  separate(Name,into = c("Name","file")) %>%
+  select(Name) %>%
+  mutate(Name = recode(Name, "wugenghui" = "wugenghui2",
+                "yinshaozeng" = "yinshaozhen"))
+
+features = read_csv('../2020.05/feature_extracted_total177.csv')
+response = read_csv('../2020.05/outcome_2020_total(1).csv') %>%
+  mutate(Name = features$name) %>%
+  filter(Name %in% c(selected.patients$Name)) %>%
+  select(PCR)
+
+#sum(selected.patients$Name %in% response$Name) # 33,41
+#selected.patients$Name[33]
+c(selected.patients$Name)[c(33,41)] # no response for these 2 patients "wugenghui"   "yinshaozeng"
+
+MRI.features = read_csv('../MRI_data/mri.csv') %>%
+  .[,-c(1:38)] %>% # drop the 2 patients; 52 in total
+  cbind(response,.)
+
+
+clinical = read_csv('../2020.05/outcome_2020_total(1).csv') %>%
+  mutate(Name = features$name) %>%
+  filter(Name %in% c(selected.patients$Name))
+clinical_new = read_csv("../MRI_data/primary2.csv") %>% 
+  select(-1,-2) %>%
+  rename("Tumor length" = "Tumor.length",
+         "Tumor thickness" = "Tumor.thickness")
+clinical = rbind(clinical,clinical_new) 
+rm(features)
+
+
+MRI.features = rbind(MRI.features,MRI.features_new)
+```
+
+仔细核查了姓名，一共44 + 54 = 99 人（2020.05.26）
+
+# get scores
+
+```{r}
+library(mlbench)
+library(ranger)
+library(ggcorrplot)
+# calculate correlation matrix
+correlationMatrix = cor(MRI.features[,2:1133])
+# summarize the correlation matrix
+#print(correlationMatrix)
+# find attributes that are highly corrected (ideally >0.75)
+highlyCorrelated = findCorrelation(correlationMatrix, cutoff = 0.65) #0.6 拖后腿了,0.75区分度100%
+# print indexes of highly correlated attributes
+#print(highlyCorrelated)
+length(highlyCorrelated)
+
+# plot the corr
+cor.lowcorr = cor(MRI.features[,-c(1,highlyCorrelated)])
+colnames(cor.lowcorr) = as.character(seq(1:ncol(cor.lowcorr)))
+rownames(cor.lowcorr) = as.character(seq(1:ncol(cor.lowcorr)))
+
+ggcorrplot(cor.lowcorr,
+           #type = "lower",
+           outline.color = "white",
+           colors = c("#6D9EC1", "white", "#E46726")) +
+  labs(x = "Features ID",
+       title = "Correlation Matrix for the 57 Selected Radiomics Features at the First Stage",
+       y = "Features ID") +
+  theme(plot.title = element_text(hjust=.5))
+1132-length(highlyCorrelated)
+```
+
+# LASSO get scores
+## LASSO reg
+```{r}
+library(MLmetrics)
+#features.lasso = features %>% .[features_into_account] #datase for lasso
+#x = features.lasso %>% as.matrix() %>% scale()
+#y = features$pcr %>% as.factor()
+
+
+x = MRI.features %>%  .[,-highlyCorrelated] %>% as.matrix() %>% scale()
+y = MRI.features$PCR %>% as.factor()
+
+levels(y) = c("N","Y")
+
+ctrl1  = trainControl(method = "cv", number = 10,
+                      summaryFunction = prSummary,
+                       # prSummary needs calculated class probs
+                       classProbs = T)
+
+set.seed(888)
+lasso.fit = train(x, y,method = "glmnet",
+                  tuneGrid = expand.grid(alpha = 1,lambda =exp(seq(-8, -3, length=1000))),
+        #preProc = c("center", "scale"),
+        metric = "ROC",
+        trControl = ctrl1)
+lasso.fit$bestTune
+#lasso.fit$finalModel$beta
+ggplot(lasso.fit,highlight = T) +
+  theme_bw() +
+  labs(title = "Variable Selection Process via Logistic LASSO Regression") +
+  theme(plot.title = element_text(hjust = .5))
+
+#trace plots for lasso variable selection
+library(glmnet)
+
+plot.glmnet(lasso.fit$finalModel, xvar = "lambda", label = T,
+     main = "Trace Plot for the Coefficients")
+```
+
+## calculate scores
+
+```{r}
+coef = data.frame(as.matrix(coef(lasso.fit$finalModel,lasso.fit$bestTune$lambda)))
+
+coef = coef %>%
+  mutate(coef = rownames(coef)) %>%
+  rename("value" = "X1") %>%
+  filter(value !=0)
+
+coef %>%
+  filter(value !=0) %>%
+  nrow() # number of useful predictors
+
+# The selected predictors are:
+predictors = coef$coef[-1] #plus intercept 1+n
+# the next step is to calculate radscores:
+predictors_val = coef$value[-1]
+
+# the next step is to calculate radscores:
+feature.matrix = MRI.features[predictors] %>% as.matrix() %>% scale()
+coef.matrix = predictors_val %>% as.matrix()
+MRscore = feature.matrix %*% coef.matrix + coef$value[1]
+
+# construct a new dataset for future prediction
+data.pred = clinical %>%
+  mutate(MRscore = MRscore,
+         PCR = factor(PCR))
+
+MRscore_merge = data.pred %>% select(Name, MRscore)
+```
+
+# check scores
+
+```{r}
+data.pred %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = PCR,
+             y = MRscore, fill = PCR)) +
+  geom_boxplot() +
+  theme_bw()
+
+
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,MRscore), y = MRscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "MRI-score for the 99 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+
+
+```
+
+# save data
+
+```{r}
+#write_csv(data.pred[,ncol(data.pred)],"./2020.05/MRscore99.csv")
+data.org = read_csv('../2020.05/CTscore177.csv') %>% mutate(Name = recode(Name, "lixilai2" = "lixilai"))
+data.pred = data.org %>%
+  mutate(Age = factor(Age),
+         cT = ifelse(cT == 2, 3, cT),
+         cT = factor(cT),
+         cN = factor(cN),
+         cTNM = factor(cTNM),
+         MRF = as.character(MRF),
+         `Tumor length` = factor(`Tumor length`),
+         Distance = factor(Distance),
+         CEA = factor(CEA),
+         Differentiation = factor(Differentiation),
+         PCR = factor(PCR),
+         Group = ifelse(Group == "C", "B", Group)
+         #rf.score = rf.score
+         ) %>%
+  arrange(Name) %>%
+  .[,-1] #data.pred is for future modeling. Pay attention: the name `data.pred` also used in previous script, clear the environment before using this
+
+data.pred = merge(MRscore_merge,data.pred) %>% select(1,3:16,2) %>%
+  mutate(mixed = (MRscore+radscore)/2)
+
+write.csv(data.pred,"../2020.05/MRandCTscore99.csv")
+#clinical$Name[75] %in% data.org$Name
+#lixilai  not in data.org
+
+#作图，检查数据变动是否有误
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,MRscore), y = MRscore,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "MRI-score for the 99 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+ggsave("MRI_plot.pdf")
+
+data.pred %>%
+  arrange(PCR) %>%
+  mutate(id = 1:nrow(data.pred)) %>%
+  ggplot(aes(x = reorder(id,mixed), y = mixed,
+              fill = PCR)) +
+  geom_col() +
+  theme_classic() +
+  labs(title = "Mixed-score for the 99 Patients",
+       x = "Patients",
+       y = "Radscore") + 
+  theme(plot.title = element_text(hjust = .5),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+  ggsci::scale_fill_jama(labels = c("PCR = 0", "PCR = 1"))
+ggsave("MIXED_plot.pdf")
+```
+
+# modeling 
+
+```{r}
+# preprocess data and settings
+set.seed(888)
+ctrl = trainControl(method = "repeatedcv", number = 10, repeats = 5,
+                    classProbs = TRUE,
+                    summaryFunction = twoClassSummary)
+
+levels(data.pred$PCR) = c("N", "Y")
+
+#partition
+#rowTrain = createDataPartition(y = data.pred$PCR,
+#                               p = 2/3, # 划分训练验证
+#                               list = F)
+```
+
+
+# boosting
+
+```{r}
+# gbm1: MR with other variables
+gbm1.grid = expand.grid(n.trees = c(5000,6000,7000),
+                        interaction.depth = 1:6,
+                        shrinkage = c(0.0007,0.0008,0.001),
+                        n.minobsinnode = 2)
+set.seed(888)
+# Binomial loss function
+gbm1.fit = train(PCR ~ ., data.pred[,-c(1,15,17)],
+                 tuneGrid = gbm1.grid,
+                 trControl = ctrl,
+                 method = "gbm",
+                 distribution = "bernoulli",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(gbm1.fit, highlight = T) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Gradient Boosting Machine 1") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci::scale_color_lancet()
+
+gbm1.fit$bestTune
+
+# gbm2: CT with other variables
+gbm2.grid = expand.grid(n.trees = c(5000,6000,7000),
+                        interaction.depth = 1:6,
+                        shrinkage = c(0.0007,0.0008,0.001),
+                        n.minobsinnode = 2)
+set.seed(888)
+# Binomial loss function
+gbm2.fit = train(PCR ~ ., data.pred[,-c(1,16,17)],
+                 tuneGrid = gbm2.grid,
+                 trControl = ctrl,
+                 method = "gbm",
+                 distribution = "bernoulli",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(gbm2.fit, highlight = T) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Gradient Boosting Machine 2") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci::scale_color_lancet()
+
+
+# gbm3: MR and CT with other variables
+gbm3.grid = expand.grid(n.trees = c(5000,6000,7000),
+                        interaction.depth = 1:6,
+                        shrinkage = c(0.0007,0.0008,0.001),
+                        n.minobsinnode = 2)
+set.seed(888)
+# Binomial loss function
+gbm3.fit = train(PCR ~ ., data.pred[,-c(1,17)],
+                 tuneGrid = gbm3.grid,
+                 trControl = ctrl,
+                 method = "gbm",
+                 distribution = "bernoulli",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(gbm3.fit, highlight = T) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Gradient Boosting Machine 3") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci::scale_color_lancet()
+
+
+# gbm4: Mixed score with other variables
+gbm4.grid = expand.grid(n.trees = c(5000,6000,7000),
+                        interaction.depth = 1:6,
+                        shrinkage = c(0.0007,0.0008,0.001),
+                        n.minobsinnode = 2)
+set.seed(888)
+# Binomial loss function
+gbm4.fit = train(PCR ~ ., data.pred[,-c(1,15,16)],
+                 tuneGrid = gbm4.grid,
+                 trControl = ctrl,
+                 method = "gbm",
+                 distribution = "bernoulli",
+                 metric = "ROC",
+                 verbose = FALSE)
+
+ggplot(gbm4.fit, highlight = T) +
+  theme_minimal() +
+  labs(title = "Tuning Parameters for Gradient Boosting Machine 4") +
+  theme(plot.title = element_text(hjust = .5)) +
+  ggsci::scale_color_lancet()
+
+gbm4.fit$bestTune
+```
+
+
+```{r}
+res = resamples(list(gbmMRI = gbm1.fit,
+                     gbmCT = gbm2.fit,
+                     gbmBoth = gbm3.fit,
+                     gbmMixed = gbm4.fit),
+                     metric = "ROC")
+summary(res)
+bwplot(res)
+```
+
+#AUC
+
+```{r}
+library(pROC)
+# Boosting train ROC
+gbm1.fit.pred.train.prob = predict(gbm1.fit,newdata = data.pred[,-1],type = "prob")[,2]# select pos resp
+gbm1.fit.pred.train = rep("N",length(gbm1.fit.pred.train.prob))
+gbm1.fit.pred.train[gbm1.fit.pred.train.prob > 0.5] = "Y"
+
+roc.gbm1.fit = roc(data.pred$PCR[], gbm1.fit.pred.train.prob)
+plot(roc.gbm1.fit,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.gbm1.fit)
+
+
+# Boosting train ROC
+gbm2.fit.pred.train.prob = predict(gbm2.fit, newdata = data.pred[,-1], type = "prob")[,2]# select pos resp
+gbm2.fit.pred.train = rep("N",length(gbm2.fit.pred.train.prob))
+gbm2.fit.pred.train[gbm2.fit.pred.train.prob > 0.5] = "Y"
+
+roc.gbm2.fit = roc(data.pred$PCR, gbm2.fit.pred.train.prob)
+plot(roc.gbm2.fit,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm2.fit)
+
+
+# Boosting train ROC
+gbm3.fit.pred.train.prob = predict(gbm3.fit, newdata = data.pred[,-1], type = "prob")[,2]# select pos resp
+gbm3.fit.pred.train = rep("N",length(gbm3.fit.pred.train.prob))
+gbm3.fit.pred.train[gbm3.fit.pred.train.prob > 0.5] = "Y"
+
+roc.gbm3.fit = roc(data.pred$PCR, gbm3.fit.pred.train.prob)
+plot(roc.gbm3.fit,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm3.fit)
+
+gbm4.fit.pred.train.prob = predict(gbm4.fit,newdata = data.pred[,-1],type = "prob")[,2]# select pos resp
+gbm4.fit.pred.train = rep("N",length(gbm4.fit.pred.train.prob))
+gbm4.fit.pred.train[gbm4.fit.pred.train.prob > 0.5] = "Y"
+
+roc.gbm4.fit = roc(data.pred$PCR, gbm4.fit.pred.train.prob)
+plot(roc.gbm4.fit,
+     legacy.axes = T,
+     print.auc = T,
+     print.thres = T)
+ci.auc(roc.gbm4.fit)
+
+
+pdf(file = "PrimaryCohort.pdf",width = 8)
+plot(roc.gbm2.fit, print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.1,auc.polygon.col="gray", grid = c(0.5, 0.3), max.auc.polygon=TRUE,legen = T,main = "Primary Cohort",col="red")
+#plot.roc(roc.gbm2.fit,add=T,col="red", print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.2)
+#plot.roc(roc.gbm3.fit,add=T,col="blue",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.3)
+plot.roc(roc.gbm4.fit,add=T,col="blue",print.auc=TRUE,print.auc.x=0.3,print.auc.y=0.4)
+legend("bottomright",legend = c(
+                  #"MRI-GBM`",
+                  #"CT-GBM",
+                  "MRI-CT-GBM",
+                  "MIxed-GBM"),
+       col = c(#"yellow","red",
+               "red","blue"),lwd = 4,cex = 0.35)
+dev.off()
+```
+
+# testset results(舍弃)
+
+```{r,eval=FALSE}
+# Boosting test ROC
+gbm1.fit.pred.test.prob = predict(gbm1.fit,newdata = data.pred[-rowTrain,-1], type = "prob")[,2]# select pos resp
+gbm1.fit.pred.test = rep("N",length(gbm1.fit.pred.test.prob))
+gbm1.fit.pred.test[gbm1.fit.pred.test.prob > 0.5] = "Y"
+
+roc.gbm1.fit.test = roc(data.pred$PCR[-rowTrain], gbm1.fit.pred.test.prob)
+plot(roc.gbm1.fit.test,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm1.fit.test)
+
+# Boosting test ROC
+gbm2.fit.pred.test.prob = predict(gbm2.fit,newdata = data.pred[-rowTrain,-1], type = "prob")[,2]# select pos resp
+gbm2.fit.pred.test = rep("N",length(gbm2.fit.pred.test.prob))
+gbm2.fit.pred.test[gbm2.fit.pred.test.prob > 0.5] = "Y"
+
+roc.gbm2.fit.test = roc(data.pred$PCR[-rowTrain], gbm2.fit.pred.test.prob)
+plot(roc.gbm2.fit.test,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm2.fit.test)
+
+# Boosting test ROC
+gbm3.fit.pred.test.prob = predict(gbm3.fit,newdata = data.pred[-rowTrain,-1], type = "prob")[,2]# select pos resp
+gbm3.fit.pred.test = rep("N",length(gbm3.fit.pred.test.prob))
+gbm3.fit.pred.test[gbm3.fit.pred.test.prob > 0.5] = "Y"
+
+roc.gbm3.fit.test = roc(data.pred$PCR[-rowTrain], gbm3.fit.pred.test.prob)
+plot(roc.gbm3.fit.test,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm3.fit.test)
+
+# Boosting test ROC
+gbm4.fit.pred.test.prob = predict(gbm4.fit,newdata = data.pred[-rowTrain,-1], type = "prob")[,2]# select pos resp
+gbm4.fit.pred.test = rep("N",length(gbm4.fit.pred.test.prob))
+gbm4.fit.pred.test[gbm4.fit.pred.test.prob > 0.5] = "Y"
+
+roc.gbm4.fit.test = roc(data.pred$PCR[-rowTrain], gbm4.fit.pred.test.prob)
+plot(roc.gbm4.fit.test,
+     legacy.axes = T,
+     print.auc = T)
+ci.auc(roc.gbm4.fit.test)
+
+
+
+
+```
+
+# primary results(SEN,SPEC,NPV,PPV...)
+
+```{r}
+# primary results
+caret::confusionMatrix(factor(gbm1.fit.pred.train),reference = data.pred$PCR,
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm2.fit.pred.train),reference = data.pred$PCR,
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm3.fit.pred.train),reference = data.pred$PCR,
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm4.fit.pred.train),reference = data.pred$PCR,
+                       positive = "Y")
+```
+
+```{r,eval=FALSE}
+caret::confusionMatrix(factor(gbm1.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm2.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm3.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+caret::confusionMatrix(factor(gbm4.fit.pred.test),reference = data.pred$PCR[-rowTrain],
+                       positive = "Y")
+
+```
+
